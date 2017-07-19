@@ -37,7 +37,7 @@ class dqn(object):
 
     def create_nn(self):
 
-        s1 = {1: [self.input_size, 30], 2: [30, 30], 3: [30, self.output_size]}
+        s1 = {1: [self.input_size, 30], 2: [30, 190], 3: [190, self.output_size]}
         s2 = {1: [30], 2: [30], 3: [self.output_size]}
         for i in s1:
             self.weights[i] = tf.Variable(tf.truncated_normal(s1[i]), name='w{0}'.format(i))
