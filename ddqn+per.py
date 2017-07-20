@@ -60,7 +60,7 @@ class dqn(object):
         self.input_size = env.observation_space.sample().size
         self.output_size = env.action_space.n
         self.gamma = 0.9
-        self.epsilon = 1.0
+        self.epsilon = 0.5
         self.step = 0
         self.learning_rate = 0.0001
         self.dropout = 1.0
