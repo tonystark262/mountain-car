@@ -1,11 +1,10 @@
+import heapq as hq
 import os
 import random
 
 import gym
 import numpy as np
-import queue as Q
 import tensorflow as tf
-import heapq as hq
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 env = gym.make("MountainCar-v0")
@@ -13,14 +12,14 @@ env.reset()
 
 
 class tup(object):
-    def __init__(self,p,ob):
-        self.priority=p
-        self.item=ob
+    def __init__(self, p, ob):
+        self.priority = p
+        self.item = ob
 
     def __lt__(self, other):
-        if self.priority<other.priority:
-            return True
-        return False
+        if self.priority < other.priority:
+            return False
+        return True
 
 
 class memory(object):
@@ -34,7 +33,7 @@ class memory(object):
             self.pop()
         else:
             self.size += 1
-        hq.heappush(self.memory,tup(p,ob))
+        hq.heappush(self.memory, tup(p, ob))
 
     def pop(self):
         if self.size == 0:
@@ -117,7 +116,7 @@ class dqn(object):
     def append_to_memory(self, state, action, reward, next_state, done):
         one_hot_action = np.zeros(self.output_size)
         one_hot_action[action] = 1
-        self.memory.append(-1000000000, (state, one_hot_action, reward, next_state, done))
+        self.memory.append(1000000000, (state, one_hot_action, reward, next_state, done))
         if self.memory.size > self.batch_size:
             self.train()
 
@@ -141,7 +140,7 @@ class dqn(object):
         self.sess.run(self.optimizer, feed_dict={self.x: train_x, self.y: train_y, self.a: action})
         error = self.sess.run(self.error, feed_dict={self.x: train_x, self.y: train_y, self.a: action})
         for i in range(self.batch_size):
-            self.memory.append(-error[i], sample[i])
+            self.memory.append(error[i], sample[i])
 
     def copy_variables(self):
         for i in range(1, len(self.weights) + 1, 1):
