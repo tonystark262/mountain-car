@@ -1,3 +1,5 @@
+#implemented using priority queues
+
 import heapq as hq
 import os
 import random
@@ -30,7 +32,7 @@ class memory(object):
 
     def append(self, p, ob):
         if self.size == 10000:
-            self.pop()
+            del memory[self.size-1]
         else:
             self.size += 1
         hq.heappush(self.memory, tup(p, ob))
@@ -55,15 +57,14 @@ class memory(object):
 
 class dqn(object):
     def __init__(self):
-        self.batch_size = 64
+        self.batch_size = 32
         self.episodes = 20000
         self.input_size = env.observation_space.sample().size
         self.output_size = env.action_space.n
         self.gamma = 0.9
         self.epsilon = 0.5
         self.step = 0
-        self.learning_rate = 0.0001
-        self.dropout = 1.0
+        self.learning_rate = 0.001
         self.lambda1 = 0.01
         self.initial_epsilon = self.epsilon
         self.final_epsilon = 0.01
@@ -136,7 +137,6 @@ class dqn(object):
         train_y = np.array(train_y)
         train_x = np.array(train_x)
         action = np.array(action)
-        self.dropout = 1.0
         self.sess.run(self.optimizer, feed_dict={self.x: train_x, self.y: train_y, self.a: action})
         error = self.sess.run(self.error, feed_dict={self.x: train_x, self.y: train_y, self.a: action})
         for i in range(self.batch_size):
@@ -169,13 +169,12 @@ def main():
                 obj.copy_variables()
 
         if e % 100 == 0:
-            print("episodes {0} completed".format(e), )
+            print("episodes {0} completed".format(e),)
             av = []
             for f in range(10):
                 p = env.reset()
                 r = 0
                 for i in range(200):
-                    obj.dropout = 1.0
                     ac = obj.sess.run(obj.action, feed_dict={obj.x: np.array([p])})[0]
                     p, rew, done, _ = env.step(ac)
                     r += rew

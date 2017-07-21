@@ -1,27 +1,30 @@
+# implemented using sum_tree
+
 import os
 import random
-from collections import deque
 
 import gym
 import numpy as np
 import tensorflow as tf
+from memory import Memory
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 env = gym.make("MountainCar-v0")
 env.reset()
 
 
+
 class dqn(object):
     def __init__(self):
+        self.flag=0
         self.batch_size = 32
         self.episodes = 20000
         self.input_size = env.observation_space.sample().size
         self.output_size = env.action_space.n
         self.gamma = 0.9
-        self.epsilon = 1.0
+        self.epsilon = 0.5
         self.step = 0
-        self.learning_rate = 0.0001
-        self.dropout = 1.0
+        self.learning_rate = 0.001
         self.lambda1 = 0.01
         self.initial_epsilon = self.epsilon
         self.final_epsilon = 0.01
@@ -31,14 +34,13 @@ class dqn(object):
         self.target_biases = {}
         self.create_nn()
         self.create_training_network()
-        self.memory = deque()
+        self.memory = Memory(size=20000)
         self.sess = tf.InteractiveSession()
         self.sess.run(tf.global_variables_initializer())
-
     def create_nn(self):
 
-        s1 = {1: [self.input_size, 30], 2: [30, 30], 3: [30, 30],4:[30,30], 5: [30, self.output_size]}
-        s2 = {1: [30], 2: [30], 3: [30],4:[30], 5: [self.output_size]}
+        s1 = {1: [self.input_size, 30], 2: [30, 30], 3: [30, self.output_size]}
+        s2 = {1: [30], 2: [30], 3: [self.output_size]}
         for i in s1:
             self.weights[i] = tf.Variable(tf.truncated_normal(s1[i]), name='w{0}'.format(i))
             self.biases[i] = tf.Variable(tf.truncated_normal(s2[i]), name='b{0}'.format(i))
@@ -67,36 +69,46 @@ class dqn(object):
         self.q_value_target = self.feed_forward_target(self.x)
         self.output = tf.reduce_sum(tf.multiply(self.q_value, self.a), reduction_indices=1)
         self.action = tf.argmax(self.q_value, 1)
+        self.error = tf.abs(self.output - self.y)
         self.loss = tf.reduce_mean(tf.square(self.output - self.y))
         self.optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate).minimize(self.loss)
 
     def append_to_memory(self, state, action, reward, next_state, done):
         one_hot_action = np.zeros(self.output_size)
         one_hot_action[action] = 1
-        self.memory.append((state, one_hot_action, reward, next_state, done))
-        if len(self.memory) > 10000:
-            self.memory.popleft()
-        if len(self.memory) > self.batch_size:
+        prob = (abs(reward) + .01) ** 0.6
+        self.memory.append(prob, (state, one_hot_action, reward, next_state, done))
+        if self.memory.current_size >= self.memory.size:
+            if(self.flag==0):
+                print("started training")
+                self.flag=1
             self.train()
 
+    def get_reward(self,q1, q2, reward, done):
+        if done:
+            return reward
+        else:
+            return reward + self.gamma * q2[np.argmax(q1)]
+
     def train(self):
-        sample = random.sample(self.memory, self.batch_size)
+        index, sample = self.memory.sample(self.batch_size)
         train_x = [i[0] for i in sample]
         action = [i[1] for i in sample]
         reward = [i[2] for i in sample]
         next_state = [i[3] for i in sample]
         train_y = []
+        q = self.sess.run(self.q_value, feed_dict={self.x: np.array(train_x)})
+        q_1=self.sess.run(self.q_value,feed_dict={self.x:np.array(next_state)})
         q_next = self.sess.run(self.q_value_target, feed_dict={self.x: np.array(next_state)})
         for i in range(len(reward)):
-            if sample[i][4]:
-                train_y.append(reward[i])
-            else:
-                train_y.append(reward[i] + self.gamma * np.max(q_next[i]))
+            train_y.append(self.get_reward(q_1[i],q_next[i], reward[i], sample[i][4]))
         train_y = np.array(train_y)
         train_x = np.array(train_x)
         action = np.array(action)
-        self.dropout = 1.0
         self.sess.run(self.optimizer, feed_dict={self.x: train_x, self.y: train_y, self.a: action})
+        for i in range(self.batch_size):
+            error=abs(np.max(q[i])-train_y[i])
+            self.memory.update_at_index(index[i], (error+0.01)**0.6)
 
     def copy_variables(self):
         for i in range(1, len(self.weights) + 1, 1):
@@ -110,8 +122,7 @@ def main():
         p = env.reset()
         for i in range(500):
             obj.step += 1
-            q1, ac = obj.sess.run([obj.q_value, obj.action], feed_dict={obj.x: np.array([p])})
-            ac = ac[0]
+            ac = obj.sess.run(obj.action, feed_dict={obj.x: np.array([p])})[0]
             if np.random.rand() < obj.epsilon:
                 ac = random.randint(0, obj.output_size - 1)
                 obj.epsilon = obj.final_epsilon + (obj.initial_epsilon - obj.final_epsilon) * np.exp(
@@ -125,13 +136,12 @@ def main():
                 obj.copy_variables()
 
         if e % 100 == 0:
-            print("episodes {0} completed".format(e),)
+            print("episodes {0} completed".format(e), )
             av = []
             for f in range(10):
                 p = env.reset()
                 r = 0
                 for i in range(200):
-                    obj.dropout = 1.0
                     ac = obj.sess.run(obj.action, feed_dict={obj.x: np.array([p])})[0]
                     p, rew, done, _ = env.step(ac)
                     r += rew
