@@ -17,7 +17,7 @@ env.reset()
 class dqn(object):
     def __init__(self):
         self.flag=0
-        self.batch_size = 32
+        self.batch_size = 64
         self.episodes = 20000
         self.input_size = env.observation_space.sample().size
         self.output_size = env.action_space.n
@@ -34,13 +34,13 @@ class dqn(object):
         self.target_biases = {}
         self.create_nn()
         self.create_training_network()
-        self.memory = Memory(size=20000)
+        self.memory = Memory(size=100000)
         self.sess = tf.InteractiveSession()
         self.sess.run(tf.global_variables_initializer())
     def create_nn(self):
 
-        s1 = {1: [self.input_size, 30], 2: [30, 190], 3: [190, self.output_size]}
-        s2 = {1: [30], 2: [190], 3: [self.output_size]}
+        s1 = {1: [self.input_size, 30], 2: [30, 60], 3: [60, self.output_size]}
+        s2 = {1: [30], 2: [60], 3: [self.output_size]}
         for i in s1:
             self.weights[i] = tf.Variable(tf.truncated_normal(s1[i]), name='w{0}'.format(i))
             self.biases[i] = tf.Variable(tf.truncated_normal(s2[i]), name='b{0}'.format(i))
