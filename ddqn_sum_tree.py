@@ -8,7 +8,7 @@ import numpy as np
 import tensorflow as tf
 from memory import Memory
 
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+#os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 env = gym.make("MountainCar-v0")
 env.reset()
 
@@ -21,10 +21,10 @@ class dqn(object):
         self.episodes = 20000
         self.input_size = env.observation_space.sample().size
         self.output_size = env.action_space.n
-        self.gamma = 0.9
-        self.epsilon = 0.5
+        self.gamma = 0.99
+        self.epsilon = 1
         self.step = 0
-        self.learning_rate = 0.001
+        self.learning_rate = 0.0001
         self.lambda1 = 0.01
         self.initial_epsilon = self.epsilon
         self.final_epsilon = 0.01
@@ -39,8 +39,8 @@ class dqn(object):
         self.sess.run(tf.global_variables_initializer())
     def create_nn(self):
 
-        s1 = {1: [self.input_size, 30], 2: [30, 30], 3: [30, self.output_size]}
-        s2 = {1: [30], 2: [30], 3: [self.output_size]}
+        s1 = {1: [self.input_size, 30], 2: [30, 190], 3: [190, self.output_size]}
+        s2 = {1: [30], 2: [190], 3: [self.output_size]}
         for i in s1:
             self.weights[i] = tf.Variable(tf.truncated_normal(s1[i]), name='w{0}'.format(i))
             self.biases[i] = tf.Variable(tf.truncated_normal(s2[i]), name='b{0}'.format(i))

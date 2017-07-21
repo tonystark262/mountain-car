@@ -47,10 +47,6 @@ class Memory(object):
             x=self.get(0,s)
             l.append(x[0])
             m.append(x[1])
-
-        if(type(m)==type(1)):
-            x=raw_input()
-            pass
         return l,m
 
 

@@ -1,188 +1,292 @@
-import gym
-import tensorflow as tf
-import numpy as np
-import random
-from collections import deque
-
-# Hyper Parameters for DQN
-GAMMA = 0.9  # discount factor for target Q
-INITIAL_EPSILON = 0.5  # starting value of epsilon
-FINAL_EPSILON = 0.01  # final value of epsilon
-REPLAY_SIZE = 10000  # experience replay buffer size
-BATCH_SIZE = 32  # size of minibatch
+# OpenGym MountainCar-v0
+# -------------------
+#
+# This code demonstrates debugging of a basic Q-network (without target network)
+# in an OpenGym MountainCar-v0 environment.
+#
+# Made as part of blog series Let's make a DQN, available at:
+# https://jaromiru.com/2016/10/12/lets-make-a-dqn-debugging/
+#
+# author: Jaromir Janisch, 2016
 
 
-class DQN():
-    # DQN Agent
-    def __init__(self, env):
-        # init experience replay
-        self.replay_buffer = deque()
-        # init some parameters
-        self.time_step = 0
-        self.epsilon = INITIAL_EPSILON
-        self.state_dim = env.observation_space.shape[0]
-        self.action_dim = env.action_space.n
+# --- enable this to run on GPU
+# import os
+# os.environ['THEANO_FLAGS'] = "device=gpu,floatX=float32"
 
-        self.create_Q_network()
-        self.create_training_method()
+import random, numpy, math, gym
 
-        # Init session
-        self.session = tf.InteractiveSession()
-        self.session.run(tf.initialize_all_variables())
+# -------------------- UTILITIES -----------------------
+import matplotlib.pyplot as plt
+from matplotlib import colors
+import sys
 
-        # loading networks
-        '''
-        self.saver = tf.train.Saver()
-        checkpoint = tf.train.get_checkpoint_state("saved_networks")
-        if checkpoint and checkpoint.model_checkpoint_path:
-            self.saver.restore(self.session, checkpoint.model_checkpoint_path)
-            print("Successfully loaded:", checkpoint.model_checkpoint_path)
+
+def printQ(agent):
+    P = [
+        [-0.15955113, 0.],  # s_start
+
+        [0.83600049, 0.27574312],  # s'' -> s'
+        [0.85796947, 0.28245832],  # s' -> s
+        [0.88062271, 0.29125591],  # s -> terminal
+    ]
+
+    pred = agent.brain.predict(numpy.array(P))
+
+    for o in pred:
+        sys.stdout.write(str(o[1]) + " ")
+
+    print(";")
+    sys.stdout.flush()
+
+
+def mapBrain(brain, res):
+    s = numpy.zeros((res * res, 2))
+    i = 0
+
+    for i1 in range(res):
+        for i2 in range(res):
+            s[i] = numpy.array([2 * (i1 - res / 2) / res, 2 * (i2 - res / 2) / res])
+            i += 1
+
+    mapV = numpy.amax(brain.predict(s), axis=1).reshape((res, res))
+    mapA = numpy.argmax(brain.predict(s), axis=1).reshape((res, res))
+
+    return (mapV, mapA)
+
+
+def displayBrain(brain, res=50):
+    mapV, mapA = mapBrain(brain, res)
+
+    plt.close()
+    plt.show()
+
+    fig = plt.figure(figsize=(5, 7))
+    fig.add_subplot(211)
+
+    plt.imshow(mapV)
+    plt.colorbar(orientation='vertical')
+
+    fig.add_subplot(212)
+
+    cmap = colors.ListedColormap(['blue', 'red'])
+    bounds = [-0.5, 0.5, 1.5]
+    norm = colors.BoundaryNorm(bounds, cmap.N)
+
+    plt.imshow(mapA, cmap=cmap, norm=norm)
+    cb = plt.colorbar(orientation='vertical', ticks=[0, 1])
+
+    plt.pause(0.001)
+
+
+# -------------------- BRAIN ---------------------------
+from keras.models import Sequential
+from keras.layers import *
+from keras.optimizers import *
+
+
+class Brain:
+    def __init__(self, stateCnt, actionCnt):
+        self.stateCnt = stateCnt
+        self.actionCnt = actionCnt
+
+        self.model = self._createModel()
+        # self.model.load_weights("MountainCar-basic.h5")
+
+    def _createModel(self):
+        model = Sequential()
+
+        model.add(Dense(output_dim=64, activation='relu', input_dim=stateCnt))
+        model.add(Dense(output_dim=actionCnt, activation='linear'))
+
+        opt = RMSprop(lr=0.00025)
+        model.compile(loss='mse', optimizer=opt)
+
+        return model
+
+    def train(self, x, y, epoch=1, verbose=0):
+        self.model.fit(x, y, batch_size=64, nb_epoch=epoch, verbose=verbose)
+
+    def predict(self, s):
+        return self.model.predict(s)
+
+    def predictOne(self, s):
+        return self.predict(s.reshape(1, self.stateCnt)).flatten()
+
+
+# -------------------- MEMORY --------------------------
+class Memory:  # stored as ( s, a, r, s_ )
+    samples = []
+
+    def __init__(self, capacity):
+        self.capacity = capacity
+
+    def add(self, sample):
+        self.samples.append(sample)
+
+        if len(self.samples) > self.capacity:
+            self.samples.pop(0)
+
+    def sample(self, n):
+        n = min(n, len(self.samples))
+        return random.sample(self.samples, n)
+
+    def isFull(self):
+        return len(self.samples) >= self.capacity
+
+
+# -------------------- AGENT ---------------------------
+MEMORY_CAPACITY = 100000
+BATCH_SIZE = 64
+
+GAMMA = 0.99
+
+MAX_EPSILON = 1
+MIN_EPSILON = 0.1
+LAMBDA = 0.001  # speed of decay
+
+
+class Agent:
+    steps = 0
+    epsilon = MAX_EPSILON
+
+    def __init__(self, stateCnt, actionCnt):
+        self.stateCnt = stateCnt
+        self.actionCnt = actionCnt
+
+        self.brain = Brain(stateCnt, actionCnt)
+        self.memory = Memory(MEMORY_CAPACITY)
+
+    def act(self, s):
+        if random.random() < self.epsilon:
+            return random.randint(0, self.actionCnt - 1)
         else:
-            print("Could not find old network weights")
-        '''
+            return numpy.argmax(self.brain.predictOne(s))
 
-    def create_Q_network(self):
-        # network weights
-        W1 = self.weight_variable([self.state_dim, 20])
-        b1 = self.bias_variable([20])
-        W2 = self.weight_variable([20, self.action_dim])
-        b2 = self.bias_variable([self.action_dim])
-        # input layer
-        self.state_input = tf.placeholder("float", [None, self.state_dim])
-        # hidden layers
-        h_layer = tf.nn.relu(tf.matmul(self.state_input, W1) + b1)
-        # Q Value layer
-        self.Q_value = tf.matmul(h_layer, W2) + b2
+    def observe(self, sample):  # in (s, a, r, s_) format
+        self.memory.add(sample)
 
-    def create_training_method(self):
-        self.action_input = tf.placeholder("float", [None, self.action_dim])  # one hot presentation
-        self.y_input = tf.placeholder("float", [None])
-        Q_action = tf.reduce_sum(tf.multiply(self.Q_value, self.action_input), reduction_indices=1)
-        self.cost = tf.reduce_mean(tf.square(self.y_input - Q_action))
-        self.optimizer = tf.train.AdamOptimizer(0.0001).minimize(self.cost)
+        # ----- debug
+        # slowly decrease Epsilon based on our eperience
+        self.steps += 1
+        self.epsilon = MIN_EPSILON + (MAX_EPSILON - MIN_EPSILON) * math.exp(-LAMBDA * self.steps)
 
-    def perceive(self, state, action, reward, next_state, done):
-        one_hot_action = np.zeros(self.action_dim)
-        one_hot_action[action] = 1
-        self.replay_buffer.append((state, one_hot_action, reward, next_state, done))
-        if len(self.replay_buffer) > REPLAY_SIZE:
-            self.replay_buffer.popleft()
+    def replay(self):
+        batch = self.memory.sample(BATCH_SIZE)
+        batchLen = len(batch)
 
-        if len(self.replay_buffer) > BATCH_SIZE:
-            self.train_Q_network()
+        no_state = numpy.zeros(self.stateCnt)
 
-    def train_Q_network(self):
-        self.time_step += 1
-        # Step 1: obtain random minibatch from replay memory
-        minibatch = random.sample(self.replay_buffer, BATCH_SIZE)
-        state_batch = [data[0] for data in minibatch]
-        action_batch = [data[1] for data in minibatch]
-        reward_batch = [data[2] for data in minibatch]
-        next_state_batch = [data[3] for data in minibatch]
+        states = numpy.array([o[0] for o in batch])
+        states_ = numpy.array([(no_state if o[3] is None else o[3]) for o in batch])
 
-        # Step 2: calculate y
-        y_batch = []
-        Q_value_batch = self.Q_value.eval(feed_dict={self.state_input: next_state_batch})
-        for i in range(0, BATCH_SIZE):
-            done = minibatch[i][4]
-            if done:
-                y_batch.append(reward_batch[i])
+        p = agent.brain.predict(states)
+        p_ = agent.brain.predict(states_)
+
+        x = numpy.zeros((batchLen, self.stateCnt))
+        y = numpy.zeros((batchLen, self.actionCnt))
+
+        for i in range(batchLen):
+            o = batch[i]
+            s = o[0];
+            a = o[1];
+            r = o[2];
+            s_ = o[3]
+
+            t = p[i]
+            if s_ is None:
+                t[a] = r
             else:
-                y_batch.append(reward_batch[i] + GAMMA * np.max(Q_value_batch[i]))
+                t[a] = r + GAMMA * numpy.amax(p_[i])
 
-        self.optimizer.run(feed_dict={
-            self.y_input: y_batch,
-            self.action_input: action_batch,
-            self.state_input: state_batch
-        })
+            x[i] = s
+            y[i] = t
 
-        # save network every 1000 iteration
-        #if self.time_step % 1000 == 0:
-            #self.saver.save(self.session, 'saved_networks/' + 'network' + '-dqn', global_step=self.time_step)
-
-    def egreedy_action(self, state):
-        Q_value = self.Q_value.eval(feed_dict={
-            self.state_input: [state]
-        })[0]
-        if random.random() <= self.epsilon:
-            return random.randint(0, self.action_dim - 1)
-        else:
-            return np.argmax(Q_value)
-
-        self.epsilon -= (INITIAL_EPSILON - FINAL_EPSILON) / 10000
-
-    def action(self, state):
-        return np.argmax(self.Q_value.eval(feed_dict={
-            self.state_input: [state]
-        })[0])
-
-    def weight_variable(self, shape):
-        initial = tf.truncated_normal(shape)
-        return tf.Variable(initial)
-
-    def bias_variable(self, shape):
-        initial = tf.constant(0.01, shape=shape)
-        return tf.Variable(initial)
+        self.brain.train(x, y)
 
 
-# ---------------------------------------------------------
-# Hyper Parameters
-ENV_NAME = 'MountainCar-v0'
-EPISODE = 10000  # Episode limitation
-STEP = 300  # Step limitation in an episode
-TEST = 10  # The number of experiment test every 100 episode
+class RandomAgent:
+    memory = Memory(MEMORY_CAPACITY)
+
+    def __init__(self, actionCnt):
+        self.actionCnt = actionCnt
+
+    def act(self, s):
+        return random.randint(0, self.actionCnt - 1)
+
+    def observe(self, sample):  # in (s, a, r, s_) format
+        self.memory.add(sample)
+
+    def replay(self):
+        pass
 
 
-def main():
-    # initialize OpenAI Gym env and dqn agent
-    env = gym.make(ENV_NAME)
-    agent = DQN(env)
+# -------------------- ENVIRONMENT ---------------------
+class Environment:
+    def __init__(self, problem):
+        self.problem = problem
+        self.env = gym.make(problem)
 
-    for episode in range(EPISODE):
-        # initialize task
-        state = env.reset()
-        # Train
-        for step in range(STEP):
-            action = agent.egreedy_action(state)  # e-greedy action for train
-            next_state, reward, done, _ = env.step(action)
-            # Define reward for agent
-            reward_agent = -1 if done else 0.1
-            agent.perceive(state, action, reward, next_state, done)
-            state = next_state
+        high = self.env.observation_space.high
+        low = self.env.observation_space.low
+
+        self.mean = (high + low) / 2
+        self.spread = abs(high - low) / 2
+
+    def normalize(self, s):
+        return (s - self.mean) / self.spread
+
+    def run(self, agent):
+        s = self.env.reset()
+        s = self.normalize(s)
+        R = 0
+
+        while True:
+            # self.env.render()
+
+            a = agent.act(s)  # map actions; 0 = left, 2 = right
+            if a == 0:
+                a_ = 0
+            elif a == 1:
+                a_ = 2
+
+            s_, r, done, info = self.env.step(a_)
+            s_ = self.normalize(s_)
+
+            if done:  # terminal state
+                s_ = None
+
+            agent.observe((s, a, r, s_))
+            agent.replay()
+
+            s = s_
+            R += r
+
             if done:
                 break
-        # Test every 100 episodes
-        if episode % 100 == 0:
-            total_reward = 0
-            for i in range(TEST):
-                state = env.reset()
-                for j in range(STEP):
-                    # env.render()
-                    action = agent.action(state)  # direct action for test
-                    state, reward, done, _ = env.step(action)
-                    total_reward += reward
-                    if done:
-                        break
-            ave_reward = total_reward / TEST
-            print('episode: ', episode, 'Evaluation Average Reward:', ave_reward)
-            if ave_reward >= 200:
-                break
 
-    # save results for uploading
-    '''
-    env.monitor.start('gym_results/CartPole-v0-experiment-1', force=True)
-    for i in range(100):
-        state = env.reset()
-        for j in range(200):
-            # env.render()
-            action = agent.action(state)  # direct action for test
-            state, reward, done, _ = env.step(action)
-            total_reward += reward
-            if done:
-                break
-    env.monitor.close()
-    '''
+            print("Total reward:", R)
 
 
-if __name__ == '__main__':
-    main()
+# -------------------- MAIN ----------------------------
+PROBLEM = 'MountainCar-v0'
+env = Environment(PROBLEM)
+
+stateCnt = env.env.observation_space.shape[0]
+actionCnt = 2  # env.env.action_space.n
+
+agent = Agent(stateCnt, actionCnt)
+randomAgent = RandomAgent(actionCnt)
+
+try:
+    while randomAgent.memory.isFull() == False:
+        env.run(randomAgent)
+
+    agent.memory = randomAgent.memory
+    randomAgent = None
+
+    while True:
+        env.run(agent)
+finally:
+    pass
+    #agent.brain.model.save("MountainCar-basic.h5")
