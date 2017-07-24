@@ -1,292 +1,390 @@
-# OpenGym MountainCar-v0
-# -------------------
-#
-# This code demonstrates debugging of a basic Q-network (without target network)
-# in an OpenGym MountainCar-v0 environment.
-#
-# Made as part of blog series Let's make a DQN, available at:
-# https://jaromiru.com/2016/10/12/lets-make-a-dqn-debugging/
-#
-# author: Jaromir Janisch, 2016
+'''
+Deep Q-learning approach to the Mountain Car problem
+using OpenAI's gym environment.
+As part of the basic series on reinforcement learning @
+https://github.com/vmayoral/basic_reinforcement_learning
+This code implements the algorithm described at:
+Mnih, V., Kavukcuoglu, K., Silver, D., Rusu, A. A., Veness, J., Bellemare, M. G., ... & Petersen,
+S. (2015). Human-level control through deep reinforcement learning. Nature, 518(7540), 529-533.
+Code based on @wingedsheep's work at https://gist.github.com/wingedsheep/4199594b02138dd427c22a540d6d6b8d
+        @author: Victor Mayoral Vilches <victor@erlerobotics.com>
+'''
 
-
-# --- enable this to run on GPU
-# import os
-# os.environ['THEANO_FLAGS'] = "device=gpu,floatX=float32"
-
-import random, numpy, math, gym
-
-# -------------------- UTILITIES -----------------------
-import matplotlib.pyplot as plt
-from matplotlib import colors
-import sys
-
-
-def printQ(agent):
-    P = [
-        [-0.15955113, 0.],  # s_start
-
-        [0.83600049, 0.27574312],  # s'' -> s'
-        [0.85796947, 0.28245832],  # s' -> s
-        [0.88062271, 0.29125591],  # s -> terminal
-    ]
-
-    pred = agent.brain.predict(numpy.array(P))
-
-    for o in pred:
-        sys.stdout.write(str(o[1]) + " ")
-
-    print(";")
-    sys.stdout.flush()
-
-
-def mapBrain(brain, res):
-    s = numpy.zeros((res * res, 2))
-    i = 0
-
-    for i1 in range(res):
-        for i2 in range(res):
-            s[i] = numpy.array([2 * (i1 - res / 2) / res, 2 * (i2 - res / 2) / res])
-            i += 1
-
-    mapV = numpy.amax(brain.predict(s), axis=1).reshape((res, res))
-    mapA = numpy.argmax(brain.predict(s), axis=1).reshape((res, res))
-
-    return (mapV, mapA)
-
-
-def displayBrain(brain, res=50):
-    mapV, mapA = mapBrain(brain, res)
-
-    plt.close()
-    plt.show()
-
-    fig = plt.figure(figsize=(5, 7))
-    fig.add_subplot(211)
-
-    plt.imshow(mapV)
-    plt.colorbar(orientation='vertical')
-
-    fig.add_subplot(212)
-
-    cmap = colors.ListedColormap(['blue', 'red'])
-    bounds = [-0.5, 0.5, 1.5]
-    norm = colors.BoundaryNorm(bounds, cmap.N)
-
-    plt.imshow(mapA, cmap=cmap, norm=norm)
-    cb = plt.colorbar(orientation='vertical', ticks=[0, 1])
-
-    plt.pause(0.001)
-
-
-# -------------------- BRAIN ---------------------------
+import gym
+import random
+import numpy as np
 from keras.models import Sequential
-from keras.layers import *
-from keras.optimizers import *
+from keras import optimizers
+from keras.layers.core import Dense, Dropout, Activation
+from keras.layers.normalization import BatchNormalization
+from keras.layers.advanced_activations import LeakyReLU
+from keras.regularizers import l2
 
 
-class Brain:
-    def __init__(self, stateCnt, actionCnt):
-        self.stateCnt = stateCnt
-        self.actionCnt = actionCnt
+# import os
+# os.environ["THEANO_FLAGS"] = "mode=FAST_RUN,device=gpu,floatX=float32"
+# import theano
 
-        self.model = self._createModel()
-        # self.model.load_weights("MountainCar-basic.h5")
+class Memory:
+    """
+    This class provides an abstraction to store the [s, a, r, a'] elements of each iteration.
+    Instead of using tuples (as other implementations do), the information is stored in lists
+    that get returned as another list of dictionaries with each key corresponding to either
+    "state", "action", "reward", "nextState" or "isFinal".
+    """
 
-    def _createModel(self):
+    def __init__(self, size):
+        self.size = size
+        self.currentPosition = 0
+        self.states = []
+        self.actions = []
+        self.rewards = []
+        self.newStates = []
+        self.finals = []
+
+    def getMiniBatch(self, size):
+        indices = random.sample(np.arange(len(self.states)).tolist(), min(size, len(self.states)))
+        miniBatch = []
+        for index in indices:
+            miniBatch.append({'state': self.states[index], 'action': self.actions[index], 'reward': self.rewards[index],
+                              'newState': self.newStates[index], 'isFinal': self.finals[index]})
+        return miniBatch
+
+    def getCurrentSize(self):
+        return len(self.states)
+
+    def getMemory(self, index):
+        return {'state': self.states[index], 'action': self.actions[index], 'reward': self.rewards[index],
+                'newState': self.newStates[index], 'isFinal': self.finals[index]}
+
+    def addMemory(self, state, action, reward, newState, isFinal):
+        if (self.currentPosition >= self.size - 1):
+            self.currentPosition = 0
+        if (len(self.states) > self.size):
+            self.states[self.currentPosition] = state
+            self.actions[self.currentPosition] = action
+            self.rewards[self.currentPosition] = reward
+            self.newStates[self.currentPosition] = newState
+            self.finals[self.currentPosition] = isFinal
+        else:
+            self.states.append(state)
+            self.actions.append(action)
+            self.rewards.append(reward)
+            self.newStates.append(newState)
+            self.finals.append(isFinal)
+
+        self.currentPosition += 1
+
+
+class DeepQ:
+    """
+    DQN abstraction.
+    As a quick reminder:
+        traditional Q-learning:
+            Q(s, a) += alpha * (reward(s,a) + gamma * max(Q(s') - Q(s,a))
+        DQN:
+            target = reward(s,a) + gamma * max(Q(s')
+    """
+
+    def __init__(self, inputs, outputs, memorySize, discountFactor, learningRate, learnStart):
+        """
+        Parameters:
+            - inputs: input size
+            - outputs: output size
+            - memorySize: size of the memory that will store each state
+            - discountFactor: the discount factor (gamma)
+            - learningRate: learning rate
+            - learnStart: steps to happen before for learning. Set to 128
+        """
+        self.input_size = inputs
+        self.output_size = outputs
+        self.memory = Memory(memorySize)
+        self.discountFactor = discountFactor
+        self.learnStart = learnStart
+        self.learningRate = learningRate
+
+    def initNetworks(self, hiddenLayers):
+        model = self.createModel(self.input_size, self.output_size, hiddenLayers, "relu", self.learningRate)
+        self.model = model
+
+        targetModel = self.createModel(self.input_size, self.output_size, hiddenLayers, "relu", self.learningRate)
+        self.targetModel = targetModel
+
+    def createRegularizedModel(self, inputs, outputs, hiddenLayers, activationType, learningRate):
+        bias = True
+        dropout = 0
+        regularizationFactor = 0.01
         model = Sequential()
+        if len(hiddenLayers) == 0:
+            model.add(Dense(self.output_size, input_shape=(self.input_size,), init='lecun_uniform', bias=bias))
+            model.add(Activation("linear"))
+        else:
+            if regularizationFactor > 0:
+                model.add(Dense(hiddenLayers[0], input_shape=(self.input_size,), init='lecun_uniform',
+                                W_regularizer=l2(regularizationFactor), bias=bias))
+            else:
+                model.add(Dense(hiddenLayers[0], input_shape=(self.input_size,), init='lecun_uniform', bias=bias))
 
-        model.add(Dense(output_dim=64, activation='relu', input_dim=stateCnt))
-        model.add(Dense(output_dim=actionCnt, activation='linear'))
+            if (activationType == "LeakyReLU"):
+                model.add(LeakyReLU(alpha=0.01))
+            else:
+                model.add(Activation(activationType))
 
-        opt = RMSprop(lr=0.00025)
-        model.compile(loss='mse', optimizer=opt)
-
+            for index in range(1, len(hiddenLayers)):
+                layerSize = hiddenLayers[index]
+                if regularizationFactor > 0:
+                    model.add(Dense(layerSize, init='lecun_uniform', W_regularizer=l2(regularizationFactor), bias=bias))
+                else:
+                    model.add(Dense(layerSize, init='lecun_uniform', bias=bias))
+                if (activationType == "LeakyReLU"):
+                    model.add(LeakyReLU(alpha=0.01))
+                else:
+                    model.add(Activation(activationType))
+                if dropout > 0:
+                    model.add(Dropout(dropout))
+            model.add(Dense(self.output_size, init='lecun_uniform', bias=bias))
+            model.add(Activation("linear"))
+        optimizer = optimizers.RMSprop(lr=learningRate, rho=0.9, epsilon=1e-06)
+        model.compile(loss="mse", optimizer=optimizer)
+        model.summary()
         return model
 
-    def train(self, x, y, epoch=1, verbose=0):
-        self.model.fit(x, y, batch_size=64, nb_epoch=epoch, verbose=verbose)
-
-    def predict(self, s):
-        return self.model.predict(s)
-
-    def predictOne(self, s):
-        return self.predict(s.reshape(1, self.stateCnt)).flatten()
-
-
-# -------------------- MEMORY --------------------------
-class Memory:  # stored as ( s, a, r, s_ )
-    samples = []
-
-    def __init__(self, capacity):
-        self.capacity = capacity
-
-    def add(self, sample):
-        self.samples.append(sample)
-
-        if len(self.samples) > self.capacity:
-            self.samples.pop(0)
-
-    def sample(self, n):
-        n = min(n, len(self.samples))
-        return random.sample(self.samples, n)
-
-    def isFull(self):
-        return len(self.samples) >= self.capacity
-
-
-# -------------------- AGENT ---------------------------
-MEMORY_CAPACITY = 100000
-BATCH_SIZE = 64
-
-GAMMA = 0.99
-
-MAX_EPSILON = 1
-MIN_EPSILON = 0.1
-LAMBDA = 0.001  # speed of decay
-
-
-class Agent:
-    steps = 0
-    epsilon = MAX_EPSILON
-
-    def __init__(self, stateCnt, actionCnt):
-        self.stateCnt = stateCnt
-        self.actionCnt = actionCnt
-
-        self.brain = Brain(stateCnt, actionCnt)
-        self.memory = Memory(MEMORY_CAPACITY)
-
-    def act(self, s):
-        if random.random() < self.epsilon:
-            return random.randint(0, self.actionCnt - 1)
+    def createModel(self, inputs, outputs, hiddenLayers, activationType, learningRate):
+        model = Sequential()
+        if len(hiddenLayers) == 0:
+            model.add(Dense(self.output_size, input_shape=(self.input_size,), init='lecun_uniform'))
+            model.add(Activation("linear"))
         else:
-            return numpy.argmax(self.brain.predictOne(s))
-
-    def observe(self, sample):  # in (s, a, r, s_) format
-        self.memory.add(sample)
-
-        # ----- debug
-        # slowly decrease Epsilon based on our eperience
-        self.steps += 1
-        self.epsilon = MIN_EPSILON + (MAX_EPSILON - MIN_EPSILON) * math.exp(-LAMBDA * self.steps)
-
-    def replay(self):
-        batch = self.memory.sample(BATCH_SIZE)
-        batchLen = len(batch)
-
-        no_state = numpy.zeros(self.stateCnt)
-
-        states = numpy.array([o[0] for o in batch])
-        states_ = numpy.array([(no_state if o[3] is None else o[3]) for o in batch])
-
-        p = agent.brain.predict(states)
-        p_ = agent.brain.predict(states_)
-
-        x = numpy.zeros((batchLen, self.stateCnt))
-        y = numpy.zeros((batchLen, self.actionCnt))
-
-        for i in range(batchLen):
-            o = batch[i]
-            s = o[0];
-            a = o[1];
-            r = o[2];
-            s_ = o[3]
-
-            t = p[i]
-            if s_ is None:
-                t[a] = r
+            model.add(Dense(hiddenLayers[0], input_shape=(self.input_size,), init='lecun_uniform'))
+            if (activationType == "LeakyReLU"):
+                model.add(LeakyReLU(alpha=0.01))
             else:
-                t[a] = r + GAMMA * numpy.amax(p_[i])
+                model.add(Activation(activationType))
 
-            x[i] = s
-            y[i] = t
+            for index in range(1, len(hiddenLayers)):
+                # print("adding layer "+str(index))
+                layerSize = hiddenLayers[index]
+                model.add(Dense(layerSize, init='lecun_uniform'))
+                if (activationType == "LeakyReLU"):
+                    model.add(LeakyReLU(alpha=0.01))
+                else:
+                    model.add(Activation(activationType))
+            model.add(Dense(self.output_size, init='lecun_uniform'))
+            model.add(Activation("linear"))
+        optimizer = optimizers.RMSprop(lr=learningRate, rho=0.9, epsilon=1e-06)
+        model.compile(loss="mse", optimizer=optimizer)
+        model.summary()
+        return model
 
-        self.brain.train(x, y)
+    def printNetwork(self):
+        i = 0
+        for layer in self.model.layers:
+            weights = layer.get_weights()
+            print
+            "layer ", i, ": ", weights
+            i += 1
+
+    def backupNetwork(self, model, backup):
+        weightMatrix = []
+        for layer in model.layers:
+            weights = layer.get_weights()
+            weightMatrix.append(weights)
+        i = 0
+        for layer in backup.layers:
+            weights = weightMatrix[i]
+            layer.set_weights(weights)
+            i += 1
+
+    def updateTargetNetwork(self):
+        self.backupNetwork(self.model, self.targetModel)
+
+    # predict Q values for all the actions
+    def getQValues(self, state):
+        predicted = self.model.predict(state.reshape(1, len(state)))
+        return predicted[0]
+
+    def getTargetQValues(self, state):
+        predicted = self.targetModel.predict(state.reshape(1, len(state)))
+        return predicted[0]
+
+    def getMaxQ(self, qValues):
+        return np.max(qValues)
+
+    def getMaxIndex(self, qValues):
+        return np.argmax(qValues)
+
+    # calculate the target function
+    def calculateTarget(self, qValuesNewState, reward, isFinal):
+        """
+        target = reward(s,a) + gamma * max(Q(s')
+        """
+        if isFinal:
+            return reward
+        else:
+            return reward + self.discountFactor * self.getMaxQ(qValuesNewState)
+
+    # select the action with the highest Q value
+    def selectAction(self, qValues, explorationRate):
+        rand = random.random()
+        if rand < explorationRate:
+            action = np.random.randint(0, self.output_size)
+        else:
+            action = self.getMaxIndex(qValues)
+        return action
+
+    def selectActionByProbability(self, qValues, bias):
+        qValueSum = 0
+        shiftBy = 0
+        for value in qValues:
+            if value + shiftBy < 0:
+                shiftBy = - (value + shiftBy)
+        shiftBy += 1e-06
+
+        for value in qValues:
+            qValueSum += (value + shiftBy) ** bias
+
+        probabilitySum = 0
+        qValueProbabilities = []
+        for value in qValues:
+            probability = ((value + shiftBy) ** bias) / float(qValueSum)
+            qValueProbabilities.append(probability + probabilitySum)
+            probabilitySum += probability
+        qValueProbabilities[len(qValueProbabilities) - 1] = 1
+
+        rand = random.random()
+        i = 0
+        for value in qValueProbabilities:
+            if (rand <= value):
+                return i
+            i += 1
+
+    def addMemory(self, state, action, reward, newState, isFinal):
+        self.memory.addMemory(state, action, reward, newState, isFinal)
+
+    def learnOnLastState(self):
+        if self.memory.getCurrentSize() >= 1:
+            return self.memory.getMemory(self.memory.getCurrentSize() - 1)
+
+    def learnOnMiniBatch(self, miniBatchSize, useTargetNetwork=True):
+        # Do not learn until we've got self.learnStart samples
+        if self.memory.getCurrentSize() > self.learnStart:
+            # learn in batches of 128
+            miniBatch = self.memory.getMiniBatch(miniBatchSize)
+            X_batch = np.empty((0, self.input_size), dtype=np.float64)
+            Y_batch = np.empty((0, self.output_size), dtype=np.float64)
+            for sample in miniBatch:
+                isFinal = sample['isFinal']
+                state = sample['state']
+                action = sample['action']
+                reward = sample['reward']
+                newState = sample['newState']
+
+                qValues = self.getQValues(state)
+                if useTargetNetwork:
+                    qValuesNewState = self.getTargetQValues(newState)
+                else:
+                    qValuesNewState = self.getQValues(newState)
+                targetValue = self.calculateTarget(qValuesNewState, reward, isFinal)
+
+                X_batch = np.append(X_batch, np.array([state.copy()]), axis=0)
+                Y_sample = qValues.copy()
+                Y_sample[action] = targetValue
+                Y_batch = np.append(Y_batch, np.array([Y_sample]), axis=0)
+                if isFinal:
+                    X_batch = np.append(X_batch, np.array([newState.copy()]), axis=0)
+                    Y_batch = np.append(Y_batch, np.array([[reward] * self.output_size]), axis=0)
+            self.model.fit(X_batch, Y_batch, batch_size=len(miniBatch), nb_epoch=1, verbose=0)
 
 
-class RandomAgent:
-    memory = Memory(MEMORY_CAPACITY)
+env = gym.make('MountainCar-v0')
+# env.monitor.start('/tmp/mountaincar-experiment-1', force=True)
 
-    def __init__(self, actionCnt):
-        self.actionCnt = actionCnt
-
-    def act(self, s):
-        return random.randint(0, self.actionCnt - 1)
-
-    def observe(self, sample):  # in (s, a, r, s_) format
-        self.memory.add(sample)
-
-    def replay(self):
-        pass
+# Exploring the new environment observations and actions:
+#
+# >>> import gym
+# env = gym.make('MountainCar-v0')>>> env = gym.make('MountainCar-v0')
+# [2016-06-19 17:37:12,780] Making new env: MountainCar-v0
+# >>> print env.observation_space
+# Box(2,)
+# >>> print env.action_space
+# Discrete(3)
 
 
-# -------------------- ENVIRONMENT ---------------------
-class Environment:
-    def __init__(self, problem):
-        self.problem = problem
-        self.env = gym.make(problem)
+epochs = 1000
+steps = 100000
+updateTargetNetwork = 10000
+explorationRate = 1
+minibatch_size = 128
+learnStart = 128
+learningRate = 0.00025
+discountFactor = 0.99
+memorySize = 1000000
 
-        high = self.env.observation_space.high
-        low = self.env.observation_space.low
+last100Scores = [0] * 100
+last100ScoresIndex = 0
+last100Filled = False
 
-        self.mean = (high + low) / 2
-        self.spread = abs(high - low) / 2
+deepQ = DeepQ(2, 3, memorySize, discountFactor, learningRate, learnStart)
+# deepQ.initNetworks([30,30,30])
+deepQ.initNetworks([30, 30])
+# deepQ.initNetworks([300,300])
 
-    def normalize(self, s):
-        return (s - self.mean) / self.spread
+stepCounter = 0
 
-    def run(self, agent):
-        s = self.env.reset()
-        s = self.normalize(s)
-        R = 0
+# number of reruns
+for epoch in range(epochs):
+    observation = env.reset()
+    print
+    explorationRate
+    # number of timesteps
+    for t in range(steps):
+        #env.render()
+        qValues = deepQ.getQValues(observation)
 
-        while True:
-            # self.env.render()
+        action = deepQ.selectAction(qValues, explorationRate)
 
-            a = agent.act(s)  # map actions; 0 = left, 2 = right
-            if a == 0:
-                a_ = 0
-            elif a == 1:
-                a_ = 2
+        newObservation, reward, done, info = env.step(action)
 
-            s_, r, done, info = self.env.step(a_)
-            s_ = self.normalize(s_)
+        if (t >= 199):
+            print( "Failed. Time out")
+            done = True
+            # reward = 200
 
-            if done:  # terminal state
-                s_ = None
+        if done and t < 199:
+            print( "Sucess!")
+            # reward -= 200
+        deepQ.addMemory(observation, action, reward, newObservation, done)
 
-            agent.observe((s, a, r, s_))
-            agent.replay()
+        if stepCounter >= learnStart:
+            if stepCounter <= updateTargetNetwork:
+                deepQ.learnOnMiniBatch(minibatch_size, False)
+            else:
+                deepQ.learnOnMiniBatch(minibatch_size, True)
 
-            s = s_
-            R += r
+        observation = newObservation
 
-            if done:
-                break
+        if done:
+            last100Scores[last100ScoresIndex] = t
+            last100ScoresIndex += 1
+            if last100ScoresIndex >= 100:
+                last100Filled = True
+                last100ScoresIndex = 0
+            if not last100Filled:
+                print(           "Episode ", epoch, " finished after {} timesteps".format(t + 1))
+            else:
+                print(
+                "Episode ", epoch, " finished after {} timesteps".format(t + 1), " last 100 average: ",
+                sum(last100Scores) / len(last100Scores))
+            break
 
-            print("Total reward:", R)
+        stepCounter += 1
+        if stepCounter % updateTargetNetwork == 0:
+            deepQ.updateTargetNetwork()
+            print(
+            "updating target network")
 
+    explorationRate *= 0.995
+    # explorationRate -= (2.0/epochs)
+    explorationRate = max(0.05, explorationRate)
 
-# -------------------- MAIN ----------------------------
-PROBLEM = 'MountainCar-v0'
-env = Environment(PROBLEM)
-
-stateCnt = env.env.observation_space.shape[0]
-actionCnt = 2  # env.env.action_space.n
-
-agent = Agent(stateCnt, actionCnt)
-randomAgent = RandomAgent(actionCnt)
-
-try:
-    while randomAgent.memory.isFull() == False:
-        env.run(randomAgent)
-
-    agent.memory = randomAgent.memory
-    randomAgent = None
-
-    while True:
-        env.run(agent)
-finally:
-    pass
-    #agent.brain.model.save("MountainCar-basic.h5")
+    # env.monitor.close()
