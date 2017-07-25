@@ -8,9 +8,10 @@ import numpy as np
 import tensorflow as tf
 from memory import Memory
 
-# os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 env = gym.make("MountainCar-v0")
 env.reset()
+model_save_path = "C:/Users/sanka/codes/mountain car openai/mc_save"
 
 
 class dqn(object):
@@ -21,9 +22,9 @@ class dqn(object):
         self.input_size = env.observation_space.sample().size
         self.output_size = env.action_space.n
         self.gamma = 0.99
-        self.epsilon = 1
+        self.epsilon = .6
         self.step = 0
-        self.learning_rate = 0.001
+        self.learning_rate = 0.0001
         self.lambda1 = 0.01
         self.initial_epsilon = self.epsilon
         self.final_epsilon = 0.01
@@ -33,14 +34,16 @@ class dqn(object):
         self.target_biases = {}
         self.create_nn()
         self.create_training_network()
-        self.memory = Memory(size=10000)
+        self.max_size = 10000
+        self.memory = Memory(size=self.max_size)
         self.sess = tf.InteractiveSession()
         self.sess.run(tf.global_variables_initializer())
+        self.saver = tf.train.Saver()
 
     def create_nn(self):
 
-        s1 = {1: [self.input_size, 256], 2: [256, 512], 3: [512, self.output_size]}
-        s2 = {1: [256], 2: [512], 3: [self.output_size]}
+        s1 = {1: [self.input_size, 30], 2: [30, 100], 3: [100, 30], 4: [30, self.output_size]}
+        s2 = {1: [30], 2: [100], 3: [30], 4: [self.output_size]}
         for i in s1:
             self.weights[i] = tf.Variable(tf.truncated_normal(s1[i]), name='w{0}'.format(i))
             self.biases[i] = tf.Variable(tf.truncated_normal(s2[i]), name='b{0}'.format(i))
@@ -78,10 +81,13 @@ class dqn(object):
         prob = (abs(reward) + .01) ** 0.6
         self.memory.append(prob, (state, one_hot_action, reward, next_state, done))
         if self.memory.current_size >= self.memory.size:
+            self.epsilon = self.initial_epsilon + ((self.final_epsilon - self.initial_epsilon) * min(self.step,
+                                                                                                     self.max_size)) / self.max_size
             if (self.flag == 0):
                 print("started training")
                 self.flag = 1
             self.train()
+            # return 0
 
     def get_reward(self, q1, q2, reward, done):
         if done:
@@ -108,24 +114,31 @@ class dqn(object):
         for i in range(self.batch_size):
             error = abs(np.max(q[i]) - train_y[i])
             self.memory.update(index[i], (error + 0.01) ** 0.6)
+            # return loss
 
     def copy_variables(self):
         for i in range(1, len(self.weights) + 1, 1):
             self.sess.run(self.target_weights[i].assign(self.weights[i]))
             self.sess.run(self.target_biases[i].assign(self.biases[i]))
 
+    def save(self):
+        self.saver.save(self.sess, model_save_path)
+        print("model saved")
+
 
 def main():
     obj = dqn()
     for e in range(obj.episodes):
         p = env.reset()
+        # total_loss = 0.0
         for i in range(500):
             obj.step += 1
             ac = obj.sess.run(obj.action, feed_dict={obj.x: np.array([p])})[0]
             if np.random.rand() < obj.epsilon:
                 ac = random.randint(0, obj.output_size - 1)
-                obj.epsilon = obj.final_epsilon + (obj.initial_epsilon - obj.final_epsilon) * np.exp(
-                    -obj.lambda1 * obj.step)
+                # obj.epsilon = obj.final_epsilon + (obj.initial_epsilon - obj.final_epsilon) * np.exp(
+                #   -obj.lambda1 * obj.step)
+
             obs, rew, done, _ = env.step(ac)
             obj.append_to_memory(p, ac, rew, obs, done)
             p = obs
@@ -133,6 +146,7 @@ def main():
                 break
             if obj.step % 1000 == 0:
                 obj.copy_variables()
+        # print("episode {0} completed with loss: {1}".format(e, total_loss))
 
         if e % 100 == 0:
             print("episodes {0} completed".format(e), )
@@ -148,6 +162,7 @@ def main():
                         break
                 av.append(r)
             print("average score is {0}".format(np.average(np.array(av))))
+            obj.save()
 
 
 if __name__ == '__main__':
