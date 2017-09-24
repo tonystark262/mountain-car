@@ -5,8 +5,8 @@ import random
 
 import gym
 import numpy as np
+from collections import deque
 import tensorflow as tf
-from memory import Memory
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 env = gym.make("MountainCar-v0")
@@ -35,7 +35,8 @@ class dqn(object):
         self.create_nn()
         self.create_training_network()
         self.max_size = 10000
-        self.memory = Memory(size=self.max_size)
+        self.cur_size=0
+        self.memory = deque()
         self.sess = tf.InteractiveSession()
         self.sess.run(tf.global_variables_initializer())
         self.saver = tf.train.Saver()
@@ -82,8 +83,12 @@ class dqn(object):
         one_hot_action = np.zeros(self.output_size)
         one_hot_action[action] = 1.0
         prob = (abs(reward) + .01) ** 0.6
-        self.memory.append(prob, (state, one_hot_action, reward, next_state, done))
-        if self.memory.current_size >= self.memory.size:
+        if(self.cur_size==self.max_size):
+            self.memory.popleft()
+        else:
+            self.cur_size+=1
+        self.memory.append((state, one_hot_action, reward, next_state, done))
+        if self.cur_size >= self.max_size:
             self.step += 1
             # self.epsilon = self.final_epsilon + (self.initial_epsilon - self.final_epsilon) * np.exp(
             #    -self.lambda1 * (self.step / 200))
@@ -100,7 +105,7 @@ class dqn(object):
             return reward + self.gamma * q2[np.argmax(q1)]
 
     def train(self):
-        index, sample = self.memory.sample(self.batch_size)
+        sample = random.sample(self.memory,self.batch_size)
         train_x = [i[0] for i in sample]
         action = [i[1] for i in sample]
         reward = [i[2] for i in sample]
@@ -115,10 +120,6 @@ class dqn(object):
         train_x = np.array(train_x)
         action = np.array(action)
         self.sess.run(self.optimizer, feed_dict={self.x: train_x, self.y: train_y, self.a: action})
-        for i in range(self.batch_size):
-            error = abs(np.max(q[i]) - train_y[i])
-            self.memory.update(index[i], (error + 0.01) ** 0.6)
-            # return loss
 
     def copy_variables(self):
         for i in range(1, len(self.weights) + 1, 1):

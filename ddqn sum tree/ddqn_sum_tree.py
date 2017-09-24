@@ -11,7 +11,7 @@ from memory import Memory
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 env = gym.make("MountainCar-v0")
 env.reset()
-model_save_path = "C:/Users/sanka/codes/mountain car openai/mc_save"
+model_save_path = "C:/Users/sanka/codes/mountain car openai/New folder/mc_save"
 
 
 class dqn(object):
@@ -27,7 +27,7 @@ class dqn(object):
         self.learning_rate = 0.0001
         self.lambda1 = 0.001
         self.initial_epsilon = self.epsilon
-        self.final_epsilon = 0.01
+        self.final_epsilon = 0.1
         self.weights = {}
         self.biases = {}
         self.target_weights = {}
@@ -87,10 +87,11 @@ class dqn(object):
             self.step += 1
             # self.epsilon = self.final_epsilon + (self.initial_epsilon - self.final_epsilon) * np.exp(
             #    -self.lambda1 * (self.step / 200))
-            self.epsilon = max(self.initial_epsilon - (self.step / 400) * self.lambda1, self.final_epsilon)
             if (self.flag == 0):
                 print("started training")
+                #self.step=700*200
                 self.flag = 1
+            self.epsilon = max(self.initial_epsilon - (self.step / 400) * self.lambda1, self.final_epsilon)
             self.train()
 
     def get_reward(self, q1, q2, reward, done):
@@ -107,10 +108,14 @@ class dqn(object):
         next_state = [i[3] for i in sample]
         train_y = []
         q = self.sess.run(self.q_value, feed_dict={self.x: np.array(train_x)})
-        q_1 = self.sess.run(self.q_value, feed_dict={self.x: np.array(next_state)})
+        # q_1 = self.sess.run(self.q_value, feed_dict={self.x: np.array(next_state)})
         q_next = self.sess.run(self.q_value_target, feed_dict={self.x: np.array(next_state)})
         for i in range(len(reward)):
-            train_y.append(self.get_reward(q_1[i], q_next[i], reward[i], sample[i][4]))
+            # train_y.append(self.get_reward(q_1[i], q_next[i], reward[i], sample[i][4]))
+            if sample[i][4]:
+                train_y.append(reward[i])
+            else:
+                train_y.append(reward[i] + self.gamma * np.max(q_next[i]))
         train_y = np.array(train_y)
         train_x = np.array(train_x)
         action = np.array(action)
@@ -136,9 +141,11 @@ def main():
         p = env.reset()
         for i in range(500):
             # obj.step += 1
-            ac = obj.sess.run(obj.action, feed_dict={obj.x: np.array([p])})[0]
+            ac = 0
             if np.random.rand() < obj.epsilon:
                 ac = random.randint(0, obj.output_size - 1)
+            else:
+                ac = obj.sess.run(obj.action, feed_dict={obj.x: np.array([p])})[0]
 
             obs, rew, done, _ = env.step(ac)
             obj.append_to_memory(p, ac, rew, obs, done)

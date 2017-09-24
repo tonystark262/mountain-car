@@ -1,0 +1,15 @@
+*
+
+!.gitignore
+!ddqn.py
+!ddqn_random_batch.py
+!ddqn_sum_tree.py
+!ddqn+per.py
+!dqn.py
+!main.py
+!memory.py
+!more_train_sum_tree.py
+!README.md
+!ddqn sum tree
+
+!*/
